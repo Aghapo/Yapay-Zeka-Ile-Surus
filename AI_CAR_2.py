@@ -1,44 +1,61 @@
 import pygame
 import sys
 import math
-import numpy as np 
+import numpy as np
 
 pygame.init()
-
 WIDTH, HEIGHT = 800, 600
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("AI Cars - Dönen Araba")
+pygame.display.set_caption("AI Cars - Yarış Pisti")
 clock = pygame.time.Clock()
 FPS = 60
 
-WALLS = [
-    ((100, 100), (700, 100)),
-    ((700, 100), (700, 500)),
-    ((700, 500), (100, 500)),
-    ((100, 500), (100, 100)),
+TRACK_OUTER = [(130,100),(313,38),(547,54),(702,146),(742,331),(697,472),(583,539),(249,538),(76,417),(66,202)]
+TRACK_INNER = [(220,190),(344,127),(548,151),(630,241),(634,337),(617,394),(493,449),(286,421),(186,381),(173,247)]
+
+# Checkpoint'leri dış ve iç duvarın orta noktalarından üret
+CHECKPOINTS = [
+    (int((o[0]+i[0])/2), int((o[1]+i[1])/2))
+    for o, i in zip(TRACK_OUTER, TRACK_INNER)
 ]
 
+# Duvar segmentlerini oluştur
+def make_segments(points):
+    segments = []
+    for i in range(len(points)):
+        segments.append((points[i], points[(i+1) % len(points)]))
+    return segments
+
+OUTER_SEGMENTS = make_segments(TRACK_OUTER)
+INNER_SEGMENTS = make_segments(TRACK_INNER)
+ALL_WALLS = OUTER_SEGMENTS + INNER_SEGMENTS
+
 def line_intersection(p1, p2, p3, p4):
-    x1, y1= p1; x2, y2 = p2
-    x3, y3 = p3 ; x4, y4 = p4
-
+    x1,y1 = p1; x2,y2 = p2
+    x3,y3 = p3; x4,y4 = p4
     denom = (x1-x2)*(y3-y4) - (y1-y2)*(x3-x4)
-
-    if denom == 0 :
+    if denom == 0:
         return None
-    
     t = ((x1-x3)*(y3-y4) - (y1-y3)*(x3-x4)) / denom
     u = -((x1-x2)*(y1-y3) - (y1-y2)*(x1-x3)) / denom
-    
     if 0 < t < 1 and 0 < u < 1:
-        x = x1 + t*(x2-x1)
-        y = y1 + t*(y2-y1)
-        return (x, y)
+        return (x1 + t*(x2-x1), y1 + t*(y2-y1))
     return None
 
-    
+class NeuralNetwork:
+    def __init__(self, input_size=5, hidden_size=20, output_size=2):
+        self.w1 = np.random.uniform(-1, 1, (input_size, hidden_size))
+        self.w2 = np.random.uniform(-1, 1, (hidden_size, output_size))
+
+    def sigmoid(self, x):
+        return 1 / (1 + np.exp(-x))
+
+    def forward(self, inputs):
+        hidden = self.sigmoid(np.dot(inputs, self.w1))
+        return self.sigmoid(np.dot(hidden, self.w2))
+
 class Car:
-    def __init__(self, x, y):
+    def __init__(self, x, y, nn=None):
         self.x = x
         self.y = y
         self.angle = 0
@@ -47,20 +64,24 @@ class Car:
         self.max_speed = 5
         self.friction = 0.95
         self.turn_speed = 3
+        self.alive = True
+        self.fitness = 0
+        self.checkpoint_index = 0  # sıradaki checkpoint
+        self.checkpoints_passed = 0
+        self.frames_alive = 0
+        self.frames_since_checkpoint = 0  # takılı kalma tespiti
 
-        # Araba görseli — basit renkli dikdörtgen
+        self.nn = nn if nn else NeuralNetwork()
+
         self.image = pygame.Surface((40, 20), pygame.SRCALPHA)
         self.image.fill((0, 200, 255))
-        # Ön tarafı belirtmek için küçük kırmızı işaret
         pygame.draw.rect(self.image, (255, 50, 50), (30, 5, 10, 10))
 
-        #Sensör açıları
-        self.sensor_angles = [-90, -45, 0 , 45, 90]
+        self.sensor_angles = [-90, -45, 0, 45, 90]
         self.sensor_length = 150
-        self.sensor_readings = [1.0] * len(self.sensor_angles)
+        self.sensor_readings = [1.0] * 5
 
-
-    def cast_sensor(self):
+    def cast_sensors(self):
         self.sensor_readings = []
         for s_angle in self.sensor_angles:
             angle_rad = math.radians(self.angle + s_angle)
@@ -70,47 +91,135 @@ class Car:
             closest = None
             closest_dist = self.sensor_length
 
-            for wall in WALLS : 
-                hit = line_intersection((self.x, self.y), (end_x, end_y), wall[0], wall[1])
-                if hit :
+            for wall in ALL_WALLS:
+                hit = line_intersection(
+                    (self.x, self.y), (end_x, end_y),
+                    wall[0], wall[1]
+                )
+                if hit:
                     dist = math.hypot(hit[0]-self.x, hit[1]-self.y)
                     if dist < closest_dist:
                         closest_dist = dist
                         closest = hit
+
             self.sensor_readings.append(closest_dist / self.sensor_length)
 
-            if closest :
-                pygame.draw.line(screen, (255, 50, 50),(int(self.x), int(self.y)), (int(closest[0]), int(closest[1])), 1)
-                pygame.draw.circle(screen, (255, 255, 0),(int(closest[0]), int(closest[1])), 4)
+            if closest:
+                pygame.draw.line(screen, (255, 50, 50),
+                    (int(self.x), int(self.y)), (int(closest[0]), int(closest[1])), 1)
             else:
-                pygame.draw.line(screen, (0, 255, 100),(int(self.x), int(self.y)), (int(end_x), int(end_y)), 1)
-    def update(self, keys):
-        if keys[pygame.K_UP]:
+                pygame.draw.line(screen, (0, 255, 100),
+                    (int(self.x), int(self.y)), (int(end_x), int(end_y)), 1)
+
+    def check_checkpoint(self):
+        target = CHECKPOINTS[self.checkpoint_index]
+        dist = math.hypot(self.x - target[0], self.y - target[1])
+        if dist < 80:  # 40px yaklaşınca geçti sayılır
+            self.checkpoints_passed += 1
+            self.checkpoint_index = (self.checkpoint_index + 1) % len(CHECKPOINTS)
+            self.frames_since_checkpoint = 0  # sıfırla
+
+    def check_collision(self):
+        for wall in ALL_WALLS:
+            hit = line_intersection(
+                (self.x - 10, self.y), (self.x + 10, self.y),
+                wall[0], wall[1]
+            )
+            if hit:
+                self.alive = False
+                return
+            hit = line_intersection(
+                (self.x, self.y - 10), (self.x, self.y + 10),
+                wall[0], wall[1]
+            )
+            if hit:
+                self.alive = False
+
+    def update(self):
+        if not self.alive:
+            return
+
+        self.cast_sensors()
+
+        inputs = np.array(self.sensor_readings)
+        decision = self.nn.forward(inputs)
+
+        if decision[0] > 0.5:
             self.velocity += self.acceleration
-        if keys[pygame.K_DOWN]:
+        else:
             self.velocity -= self.acceleration
+
+        if decision[1] > 0.5:
+            self.angle += self.turn_speed
+        else:
+            self.angle -= self.turn_speed
 
         self.velocity = max(-self.max_speed, min(self.max_speed, self.velocity))
         self.velocity *= self.friction
 
-        if abs(self.velocity) > 0.1:
-            if keys[pygame.K_LEFT]:
-                self.angle += self.turn_speed
-            if keys[pygame.K_RIGHT]:
-                self.angle -= self.turn_speed
-
         self.x += math.cos(math.radians(self.angle)) * self.velocity
         self.y -= math.sin(math.radians(self.angle)) * self.velocity
 
-    def draw(self, screen):
-        self.cast_sensor()
+        self.frames_alive += 1
+        self.frames_since_checkpoint += 1
+
+        # 300 frame'de checkpoint geçemediyse öldür — takılı kalmayı önler
+        if self.frames_since_checkpoint > 300:
+            self.alive = False
+
+        # Fitness = checkpoint * 1000 + hayatta kalma süresi
+        self.fitness = self.checkpoints_passed * 1000 + self.frames_alive
+
+        self.check_checkpoint()
+        self.check_collision()
+
+    def draw(self):
+        if not self.alive:
+            return
         rotated = pygame.transform.rotate(self.image, self.angle)
         rect = rotated.get_rect(center=(int(self.x), int(self.y)))
         screen.blit(rotated, rect.topleft)
+        # Yön çizgisi
+        end_x = self.x + math.cos(math.radians(self.angle)) * 30
+        end_y = self.y - math.sin(math.radians(self.angle)) * 30
+        pygame.draw.line(screen, (255,255,0), (int(self.x), int(self.y)), (int(end_x), int(end_y)), 2)
 
+class GeneticAlgorithm:
+    def select(self, fitnesses, top_k=5):
+        return np.argsort(fitnesses)[::-1][:top_k]
 
+    def mutate(self, nn, mutation_rate=0.1):
+        child = NeuralNetwork()
+        child.w1 = nn.w1 + np.random.uniform(-mutation_rate, mutation_rate, nn.w1.shape)
+        child.w2 = nn.w2 + np.random.uniform(-mutation_rate, mutation_rate, nn.w2.shape)
+        return child
 
-car = Car(400, 300)
+    def new_generation(self, cars, fitnesses, generation):
+        best_indices = self.select(fitnesses)
+        new_cars = []
+
+        # Elitizm — en iyi arabayı olduğu gibi koru
+        best_car = cars[best_indices[0]]
+        elite = Car(START_X, START_Y, best_car.nn)
+        new_cars.append(elite)
+
+        # Mutasyon oranı nesille azalsın — erken keşfet, sonra ince ayar yap
+        mutation_rate = max(0.05, 0.3 - generation * 0.005)
+
+        # Geri kalan 19 arabayı mutasyonla doldur
+        for i in range(1, 20):
+            parent = cars[best_indices[i % len(best_indices)]]
+            child_nn = self.mutate(parent.nn, mutation_rate)
+            new_cars.append(Car(START_X, START_Y, child_nn))
+
+        return new_cars
+# Başlangıç pozisyonu ilk checkpoint
+START_X, START_Y = CHECKPOINTS[0]
+
+ga = GeneticAlgorithm()
+cars = [Car(START_X, START_Y) for _ in range(20)]
+generation = 1
+font = pygame.font.SysFont(None, 28)
 
 while True:
     for event in pygame.event.get():
@@ -118,22 +227,36 @@ while True:
             pygame.quit()
             sys.exit()
 
-    keys = pygame.key.get_pressed()
-    car.update(keys)
+    for car in cars:
+        car.update()
 
-    screen.fill((30, 30, 30))
+    if all(not car.alive for car in cars):
+        fitnesses = [car.fitness for car in cars]
+        best_fitness = max(fitnesses)
+        mutation_rate = max(0.05, 0.3 - generation * 0.005)
+        print(f"Nesil {generation} bitti — En iyi: {best_fitness:.0f} — Mutasyon: {mutation_rate:.3f}")
+        cars = ga.new_generation(cars, fitnesses, generation)
+        generation += 1
 
-    # Duvar
-    for wall in WALLS:
-        pygame.draw.line(screen, (200, 200, 200), wall[0], wall[1], 3)
+    screen.fill((20, 20, 20))
+    # Pisti çiz
+    pygame.draw.polygon(screen, (60, 60, 60), TRACK_OUTER)
+    pygame.draw.polygon(screen, (20, 20, 20), TRACK_INNER)
+    pygame.draw.lines(screen, (180, 180, 180), True, TRACK_OUTER, 2)
+    pygame.draw.lines(screen, (180, 180, 180), True, TRACK_INNER, 2)
 
-    car.draw(screen)
+    # Checkpoint'leri çiz
+    for i, cp in enumerate(CHECKPOINTS):
+        color = (255, 255, 0) if i == 0 else (100, 100, 255)
+        pygame.draw.circle(screen, color, cp, 8)
 
-    # Sensör değerleri
-    font = pygame.font.SysFont(None, 24)
-    for i, val in enumerate(car.sensor_readings):
-        text = font.render(f"S{i}: {val:.2f}", True, (255,255,255))
-        screen.blit(text, (10, 10 + i*20))
+    for car in cars:
+        car.draw()
 
+    alive_count = sum(1 for car in cars if car.alive)
+    best = max(car.fitness for car in cars)
+    screen.blit(font.render(f"Nesil: {generation}", True, (255,255,255)), (10, 10))
+    screen.blit(font.render(f"Hayatta: {alive_count}", True, (255,255,255)), (10, 35))
+    screen.blit(font.render(f"En iyi: {best:.0f}", True, (255,255,255)), (10, 60))
     pygame.display.flip()
     clock.tick(FPS)
