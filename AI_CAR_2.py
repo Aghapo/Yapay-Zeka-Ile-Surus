@@ -13,13 +13,13 @@ FPS = 60
 TRACK_OUTER = [(130,100),(313,38),(547,54),(702,146),(742,331),(697,472),(583,539),(249,538),(76,417),(66,202)]
 TRACK_INNER = [(220,190),(344,127),(548,151),(630,241),(634,337),(617,394),(493,449),(286,421),(186,381),(173,247)]
 
-# Checkpoint'leri dış ve iç duvarın orta noktalarından üret
+fitness_history = []
+
 CHECKPOINTS = [
     (int((o[0]+i[0])/2), int((o[1]+i[1])/2))
     for o, i in zip(TRACK_OUTER, TRACK_INNER)
 ]
 
-# Duvar segmentlerini oluştur
 def make_segments(points):
     segments = []
     for i in range(len(points)):
@@ -66,10 +66,11 @@ class Car:
         self.turn_speed = 3
         self.alive = True
         self.fitness = 0
-        self.checkpoint_index = 0  # sıradaki checkpoint
+        self.checkpoint_index = 0
         self.checkpoints_passed = 0
         self.frames_alive = 0
-        self.frames_since_checkpoint = 0  # takılı kalma tespiti
+        self.frames_since_checkpoint = 0
+        self.sensor_lines = []
 
         self.nn = nn if nn else NeuralNetwork()
 
@@ -82,6 +83,7 @@ class Car:
         self.sensor_readings = [1.0] * 5
 
     def cast_sensors(self):
+        self.sensor_lines = []
         self.sensor_readings = []
         for s_angle in self.sensor_angles:
             angle_rad = math.radians(self.angle + s_angle)
@@ -103,21 +105,15 @@ class Car:
                         closest = hit
 
             self.sensor_readings.append(closest_dist / self.sensor_length)
-
-            if closest:
-                pygame.draw.line(screen, (255, 50, 50),
-                    (int(self.x), int(self.y)), (int(closest[0]), int(closest[1])), 1)
-            else:
-                pygame.draw.line(screen, (0, 255, 100),
-                    (int(self.x), int(self.y)), (int(end_x), int(end_y)), 1)
+            self.sensor_lines.append((end_x, end_y, closest))
 
     def check_checkpoint(self):
         target = CHECKPOINTS[self.checkpoint_index]
         dist = math.hypot(self.x - target[0], self.y - target[1])
-        if dist < 80:  # 40px yaklaşınca geçti sayılır
+        if dist < 80:
             self.checkpoints_passed += 1
             self.checkpoint_index = (self.checkpoint_index + 1) % len(CHECKPOINTS)
-            self.frames_since_checkpoint = 0  # sıfırla
+            self.frames_since_checkpoint = 0
 
     def check_collision(self):
         for wall in ALL_WALLS:
@@ -163,11 +159,9 @@ class Car:
         self.frames_alive += 1
         self.frames_since_checkpoint += 1
 
-        # 300 frame'de checkpoint geçemediyse öldür — takılı kalmayı önler
         if self.frames_since_checkpoint > 300:
             self.alive = False
 
-        # Fitness = checkpoint * 1000 + hayatta kalma süresi
         self.fitness = self.checkpoints_passed * 1000 + self.frames_alive
 
         self.check_checkpoint()
@@ -176,10 +170,19 @@ class Car:
     def draw(self):
         if not self.alive:
             return
+
+        for end_x, end_y, closest in self.sensor_lines:
+            if closest:
+                pygame.draw.line(screen, (255, 50, 50),
+                    (int(self.x), int(self.y)), (int(closest[0]), int(closest[1])), 1)
+            else:
+                pygame.draw.line(screen, (0, 255, 100),
+                    (int(self.x), int(self.y)), (int(end_x), int(end_y)), 1)
+
         rotated = pygame.transform.rotate(self.image, self.angle)
         rect = rotated.get_rect(center=(int(self.x), int(self.y)))
         screen.blit(rotated, rect.topleft)
-        # Yön çizgisi
+
         end_x = self.x + math.cos(math.radians(self.angle)) * 30
         end_y = self.y - math.sin(math.radians(self.angle)) * 30
         pygame.draw.line(screen, (255,255,0), (int(self.x), int(self.y)), (int(end_x), int(end_y)), 2)
@@ -198,22 +201,19 @@ class GeneticAlgorithm:
         best_indices = self.select(fitnesses)
         new_cars = []
 
-        # Elitizm — en iyi arabayı olduğu gibi koru
         best_car = cars[best_indices[0]]
         elite = Car(START_X, START_Y, best_car.nn)
         new_cars.append(elite)
 
-        # Mutasyon oranı nesille azalsın — erken keşfet, sonra ince ayar yap
         mutation_rate = max(0.05, 0.3 - generation * 0.005)
 
-        # Geri kalan 19 arabayı mutasyonla doldur
         for i in range(1, 20):
             parent = cars[best_indices[i % len(best_indices)]]
             child_nn = self.mutate(parent.nn, mutation_rate)
             new_cars.append(Car(START_X, START_Y, child_nn))
 
         return new_cars
-# Başlangıç pozisyonu ilk checkpoint
+
 START_X, START_Y = CHECKPOINTS[0]
 
 ga = GeneticAlgorithm()
@@ -224,6 +224,24 @@ font = pygame.font.SysFont(None, 28)
 while True:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
+        # Grafik çiz
+            import matplotlib.pyplot as plt
+            generations = [d["generation"] for d in fitness_history]
+            bests = [d["best"] for d in fitness_history]
+            avgs = [d["avg"] for d in fitness_history]
+            
+            plt.figure(figsize=(10, 5))
+            plt.plot(generations, bests, label="En iyi fitness", color="cyan", linewidth=2)
+            plt.plot(generations, avgs, label="Ortalama fitness", color="orange", linewidth=2, linestyle="--")
+            plt.xlabel("Nesil")
+            plt.ylabel("Fitness")
+            plt.title("AI Cars — Öğrenme Eğrisi")
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig("ogrenme_egrisi.png", dpi=150)
+            plt.show()
+            
             pygame.quit()
             sys.exit()
 
@@ -233,19 +251,27 @@ while True:
     if all(not car.alive for car in cars):
         fitnesses = [car.fitness for car in cars]
         best_fitness = max(fitnesses)
+        avg_fitness = sum(fitnesses) / len(fitnesses)  # ortalama da izle
         mutation_rate = max(0.05, 0.3 - generation * 0.005)
-        print(f"Nesil {generation} bitti — En iyi: {best_fitness:.0f} — Mutasyon: {mutation_rate:.3f}")
+        
+        # Veriyi kaydet
+        fitness_history.append({
+            "generation": generation,
+            "best": best_fitness,
+            "avg": avg_fitness
+        })
+        
+        print(f"Nesil {generation} — En iyi: {best_fitness:.0f} — Ort: {avg_fitness:.0f} — Mutasyon: {mutation_rate:.3f}")
         cars = ga.new_generation(cars, fitnesses, generation)
         generation += 1
 
     screen.fill((20, 20, 20))
-    # Pisti çiz
+
     pygame.draw.polygon(screen, (60, 60, 60), TRACK_OUTER)
     pygame.draw.polygon(screen, (20, 20, 20), TRACK_INNER)
     pygame.draw.lines(screen, (180, 180, 180), True, TRACK_OUTER, 2)
     pygame.draw.lines(screen, (180, 180, 180), True, TRACK_INNER, 2)
 
-    # Checkpoint'leri çiz
     for i, cp in enumerate(CHECKPOINTS):
         color = (255, 255, 0) if i == 0 else (100, 100, 255)
         pygame.draw.circle(screen, color, cp, 8)
@@ -258,5 +284,6 @@ while True:
     screen.blit(font.render(f"Nesil: {generation}", True, (255,255,255)), (10, 10))
     screen.blit(font.render(f"Hayatta: {alive_count}", True, (255,255,255)), (10, 35))
     screen.blit(font.render(f"En iyi: {best:.0f}", True, (255,255,255)), (10, 60))
+
     pygame.display.flip()
     clock.tick(FPS)
