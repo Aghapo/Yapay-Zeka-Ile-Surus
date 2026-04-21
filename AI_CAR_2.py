@@ -230,6 +230,7 @@ while True:
             bests = [d["best"] for d in fitness_history]
             avgs = [d["avg"] for d in fitness_history]
             
+            import os
             plt.figure(figsize=(10, 5))
             plt.plot(generations, bests, label="En iyi fitness", color="cyan", linewidth=2)
             plt.plot(generations, avgs, label="Ortalama fitness", color="orange", linewidth=2, linestyle="--")
@@ -241,7 +242,7 @@ while True:
             plt.tight_layout()
             plt.savefig("ogrenme_egrisi.png", dpi=150)
             plt.show()
-            
+            print("Dosya kaydedildi:", os.path.abspath("ogrenme_egrisi.png"))   
             pygame.quit()
             sys.exit()
 
