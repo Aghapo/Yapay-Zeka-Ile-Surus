@@ -43,7 +43,7 @@ def line_intersection(p1, p2, p3, p4):
     return None
 
 class NeuralNetwork:
-    def __init__(self, input_size=5, hidden_size=20, output_size=2):
+    def __init__(self, input_size=6, hidden_size=20, output_size=2):
         self.w1 = np.random.uniform(-1, 1, (input_size, hidden_size))
         self.w2 = np.random.uniform(-1, 1, (hidden_size, output_size))
 
@@ -106,7 +106,20 @@ class Car:
 
             self.sensor_readings.append(closest_dist / self.sensor_length)
             self.sensor_lines.append((end_x, end_y, closest))
+    def get_corners(self):
+        angle_rad = math.radians(-self.angle)  # eksi işareti eklendi
+        w, h = 18, 9
 
+        cos_a = math.cos(angle_rad)
+        sin_a = math.sin(angle_rad)
+
+        corners = []
+        for dx, dy in [(-w, -h), (w, -h), (w, h), (-w, h)]:
+            cx = self.x + dx * cos_a - dy * sin_a
+            cy = self.y + dx * sin_a + dy * cos_a
+            corners.append((cx, cy))
+        return corners
+    
     def check_checkpoint(self):
         target = CHECKPOINTS[self.checkpoint_index]
         dist = math.hypot(self.x - target[0], self.y - target[1])
@@ -114,30 +127,23 @@ class Car:
             self.checkpoints_passed += 1
             self.checkpoint_index = (self.checkpoint_index + 1) % len(CHECKPOINTS)
             self.frames_since_checkpoint = 0
-
     def check_collision(self):
-        for wall in ALL_WALLS:
-            hit = line_intersection(
-                (self.x - 10, self.y), (self.x + 10, self.y),
-                wall[0], wall[1]
-            )
-            if hit:
-                self.alive = False
-                return
-            hit = line_intersection(
-                (self.x, self.y - 10), (self.x, self.y + 10),
-                wall[0], wall[1]
-            )
-            if hit:
-                self.alive = False
-
+        corners = self.get_corners()
+        for i in range(4):
+            p1 = corners[i]
+            p2 = corners[(i+1) % 4]
+            for wall in ALL_WALLS:
+                if line_intersection(p1, p2, wall[0], wall[1]):
+                    self.alive = False
+                    return
     def update(self):
         if not self.alive:
             return
 
         self.cast_sensors()
 
-        inputs = np.array(self.sensor_readings)
+        speed_normalized = abs(self.velocity) / self.max_speed
+        inputs = np.array(self.sensor_readings + [speed_normalized])
         decision = self.nn.forward(inputs)
 
         if decision[0] > 0.5:
@@ -183,10 +189,11 @@ class Car:
         rect = rotated.get_rect(center=(int(self.x), int(self.y)))
         screen.blit(rotated, rect.topleft)
 
-        end_x = self.x + math.cos(math.radians(self.angle)) * 30
-        end_y = self.y - math.sin(math.radians(self.angle)) * 30
-        pygame.draw.line(screen, (255,255,0), (int(self.x), int(self.y)), (int(end_x), int(end_y)), 2)
-
+        # Çarpışma kutusunu çiz
+        corners = self.get_corners()
+        pygame.draw.polygon(screen, (255, 100, 0), 
+            [(int(c[0]), int(c[1])) for c in corners], 1)
+        
 class GeneticAlgorithm:
     def select(self, fitnesses, top_k=5):
         return np.argsort(fitnesses)[::-1][:top_k]
